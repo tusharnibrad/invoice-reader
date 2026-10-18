@@ -1,6 +1,8 @@
 # Invoice Reader (OCR + LLM)
 **Live demo (static, sample data):** https://invoice-reader-tushar.netlify.app
 
+![Result page](screenshot.png)
+
 Upload an invoice as a PDF or image. The app reads the text (directly from digital PDFs, or with OCR for scans and photos), asks an LLM to turn it into structured fields, and then checks that the numbers add up.
 
 **Why the validation step matters:** LLMs sometimes return confident but wrong numbers. This project checks that line items sum to the subtotal, that subtotal + tax equals the total, and that quantity x price equals each row amount. Anything that fails is shown to the user as a warning.
