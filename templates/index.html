@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoice Reader</title>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --surface: #ffffff;
+    --ink: #14202e;
+    --muted: #5b6b7c;
+    --line: #d6dde5;
+    --accent: #0b6e6e;
+    --accent-ink: #ffffff;
+    --warn-bg: #fff4e0;
+    --warn-ink: #7a4b00;
+    --ok-bg: #e3f4ec;
+    --ok-ink: #12603a;
+    --err-bg: #fdeaea;
+    --err-ink: #8a1f1f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1720;
+      --surface: #17212c;
+      --ink: #e8eef4;
+      --muted: #9fb0c0;
+      --line: #2a3745;
+      --accent: #4fc3c3;
+      --accent-ink: #062222;
+      --warn-bg: #3a2c10;
+      --warn-ink: #ffd994;
+      --ok-bg: #0f3324;
+      --ok-ink: #8fe0b5;
+      --err-bg: #3a1717;
+      --err-ink: #ffb4b4;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.55 "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 1.9rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 28px; max-width: 60ch; }
+  .layout { display: grid; grid-template-columns: 1fr; gap: 20px; }
+  @media (min-width: 860px) { .layout { grid-template-columns: 360px 1fr; align-items: start; } }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .drop {
+    display: block;
+    border: 2px dashed var(--line);
+    border-radius: 8px;
+    padding: 28px 16px;
+    text-align: center;
+    cursor: pointer;
+    color: var(--muted);
+  }
+  .drop:hover, .drop.over, .drop:focus-within { border-color: var(--accent); color: var(--ink); }
+  .drop input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .drop strong { color: var(--ink); display: block; margin-bottom: 4px; }
+  #fileName { margin: 12px 0 0; font-size: 0.9rem; color: var(--muted); word-break: break-all; }
+  button {
+    margin-top: 14px;
+    width: 100%;
+    padding: 11px 16px;
+    font: inherit;
+    font-weight: 600;
+    color: var(--accent-ink);
+    background: var(--accent);
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+  button:focus-visible, .drop:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .note { font-size: 0.85rem; color: var(--muted); margin: 14px 0 0; }
+  .banner { border-radius: 6px; padding: 10px 14px; margin-bottom: 16px; font-size: 0.95rem; }
+  .banner.ok { background: var(--ok-bg); color: var(--ok-ink); }
+  .banner.warn { background: var(--warn-bg); color: var(--warn-ink); }
+  .banner.err { background: var(--err-bg); color: var(--err-ink); }
+  .banner ul { margin: 6px 0 0; padding-left: 20px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0 0 20px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-weight: 600; word-break: break-word; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  details { margin-top: 18px; }
+  summary { cursor: pointer; color: var(--muted); }
+  pre { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); padding: 12px; border-radius: 6px; font-size: 0.85rem; max-height: 260px; overflow: auto; }
+  .empty { color: var(--muted); margin: 0; }
+  @media (prefers-reduced-motion: no-preference) { .drop { transition: border-color .15s; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Invoice Reader</h1>
+  <p class="sub">Upload an invoice as a PDF or image. The app reads the text, pulls out the key fields and checks that the totals add up.</p>
+
+  <div class="layout">
+    <section class="panel" aria-label="Upload">
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff">
+        <strong>Choose a file or drop it here</strong>
+        PDF, PNG or JPG, up to 10 MB
+      </label>
+      <p id="fileName">No file chosen</p>
+      <button id="go" disabled>Extract fields</button>
+      <p class="note">Files are processed in memory on the server and deleted right after. Always check the values yourself before using them.</p>
+    </section>
+
+    <section class="panel" id="result" aria-live="polite">
+      <p class="empty">Results appear here.</p>
+    </section>
+  </div>
+</main>
+
+<script>
+const fileInput = document.getElementById("file");
+const drop = document.getElementById("drop");
+const goBtn = document.getElementById("go");
+const nameEl = document.getElementById("fileName");
+const result = document.getElementById("result");
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function show(v) { return v === null || v === undefined || v === "" ? "Not found" : esc(v); }
+
+function setFile(file) {
+  if (!file) return;
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  fileInput.files = dt.files;
+  nameEl.textContent = file.name;
+  goBtn.disabled = false;
+}
+
+fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
+["dragenter", "dragover"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", ev => setFile(ev.dataTransfer.files[0]));
+
+goBtn.addEventListener("click", async () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  goBtn.disabled = true;
+  goBtn.textContent = "Reading document...";
+  result.innerHTML = '<p class="empty">Reading the document and extracting fields. This can take up to a minute.</p>';
+
+  const body = new FormData();
+  body.append("file", file);
+  try {
+    const res = await fetch("/extract", { method: "POST", body });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Something went wrong.");
+    render(data);
+  } catch (err) {
+    result.innerHTML = '<div class="banner err">' + esc(err.message) + '</div>';
+  } finally {
+    goBtn.disabled = false;
+    goBtn.textContent = "Extract fields";
+  }
+});
+
+function render(data) {
+  const f = data.fields || {};
+  const issues = data.issues || [];
+  const items = Array.isArray(f.line_items) ? f.line_items : [];
+
+  let html = "";
+  if (issues.length === 0) {
+    html += '<div class="banner ok">All checks passed. Totals add up.</div>';
+  } else {
+    html += '<div class="banner warn">Review these before using the data:<ul>' +
+      issues.map(i => "<li>" + esc(i) + "</li>").join("") + "</ul></div>";
+  }
+
+  html += "<dl>" + [
+    ["Vendor", f.vendor_name], ["Invoice number", f.invoice_number],
+    ["Invoice date", f.invoice_date], ["Due date", f.due_date], ["Currency", f.currency]
+  ].map(([k, v]) => "<dt>" + k + "</dt><dd>" + show(v) + "</dd>").join("") + "</dl>";
+
+  if (items.length) {
+    html += '<div class="table-wrap"><table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead><tbody>' +
+      items.map(r => "<tr><td>" + show(r.description) + '</td><td class="num">' + show(r.quantity) +
+        '</td><td class="num">' + show(r.unit_price) + '</td><td class="num">' + show(r.amount) + "</td></tr>").join("") +
+      "</tbody></table></div>";
+  } else {
+    html += '<p class="empty">No line items found.</p>';
+  }
+
+  html += "<dl style='margin-top:20px'>" + [
+    ["Subtotal", f.subtotal], ["Tax", f.tax], ["Total", f.total]
+  ].map(([k, v]) => "<dt>" + k + "</dt><dd>" + show(v) + "</dd>").join("") + "</dl>";
+
+  html += "<details><summary>Text read from the document (" + esc(data.method) + ")</summary><pre>" +
+    esc(data.text_preview) + "</pre></details>";
+  result.innerHTML = html;
+}
+</script>
+</body>
+</html>
