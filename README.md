@@ -1,4 +1,5 @@
 # Invoice Reader (OCR + LLM)
+**Live demo (static, sample data):** https://invoice-reader-tushar.netlify.app
 
 Upload an invoice as a PDF or image. The app reads the text (directly from digital PDFs, or with OCR for scans and photos), asks an LLM to turn it into structured fields, and then checks that the numbers add up.
 
