@@ -1,7 +1,7 @@
-flask==3.0.3
-gunicorn==22.0.0
-pytesseract==0.3.13
-Pillow==10.4.0
-PyMuPDF==1.24.9
-openai==1.51.0
-python-dotenv==1.0.1
+flask
+pytesseract
+Pillow
+PyMuPDF
+openai
+python-dotenv
+gunicorn
