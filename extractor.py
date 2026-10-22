@@ -4,6 +4,8 @@ ask an LLM to turn the text into structured fields, then sanity-check the result
 Heavy libraries (PyMuPDF, pytesseract, openai) are imported inside the functions
 that need them, so the pure-logic helpers can be unit-tested without them.
 """
+import base64
+import io
 import json
 import os
 import re
@@ -65,19 +67,51 @@ def read_document(path):
     raise ValueError(f"Unsupported file type: {ext}")
 
 
-def _ocr_image_file(path):
+def _find_tesseract():
+    """On Windows the installer does not add Tesseract to PATH, so point pytesseract at it."""
     import pytesseract
+
+    exe = os.getenv("TESSERACT_CMD") or r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    if os.path.exists(exe):
+        pytesseract.pytesseract.tesseract_cmd = exe
+    return pytesseract
+
+
+def prepare_for_ocr(img):
+    """Clean up a photo or screenshot so Tesseract can read it.
+
+    Phone photos of screens are large and full of moire patterns. Shrinking them,
+    blurring slightly and keeping only pixels darker than their surroundings turns
+    them into clean black-on-white text. Small images are enlarged instead.
+    """
+    from PIL import Image, ImageChops, ImageFilter, ImageOps
+
+    img = ImageOps.exif_transpose(img).convert("L")
+    width, height = img.size
+    longest = max(width, height)
+    target = 1000 if longest > 1200 else 1400
+    scale = target / longest
+    img = img.resize((max(1, int(width * scale)), max(1, int(height * scale))), Image.LANCZOS)
+    img = img.filter(ImageFilter.GaussianBlur(0.8))
+    local_mean = img.filter(ImageFilter.GaussianBlur(15))
+    ink = ImageChops.subtract(local_mean, img)  # how much darker than the neighbourhood
+    return ink.point(lambda v: 0 if v > 8 else 255)
+
+
+def _ocr_image_file(path):
     from PIL import Image
 
+    pytesseract = _find_tesseract()
     with Image.open(path) as img:
-        return pytesseract.image_to_string(img)
+        prepared = prepare_for_ocr(img)
+    return pytesseract.image_to_string(prepared, config="--psm 6")
 
 
 def _read_pdf(path):
     import fitz  # PyMuPDF
-    import pytesseract
     from PIL import Image
-    import io
+
+    pytesseract = _find_tesseract()
 
     pages, used_text, used_ocr = [], False, False
     with fitz.open(path) as doc:
@@ -103,8 +137,7 @@ def _read_pdf(path):
 
 # -------------------------------------------------------------------- LLM ---
 
-def call_llm(document_text):
-    """Send the document text to an OpenAI-compatible chat endpoint."""
+def _client_and_model():
     from openai import OpenAI
 
     api_key = os.getenv("LLM_API_KEY")
@@ -114,8 +147,12 @@ def call_llm(document_text):
             "Set LLM_API_KEY and LLM_MODEL (and LLM_BASE_URL if needed). "
             "See .env.example."
         )
+    return OpenAI(api_key=api_key, base_url=os.getenv("LLM_BASE_URL") or None), model
 
-    client = OpenAI(api_key=api_key, base_url=os.getenv("LLM_BASE_URL") or None)
+
+def call_llm(document_text):
+    """Send the document text to an OpenAI-compatible chat endpoint."""
+    client, model = _client_and_model()
     response = client.chat.completions.create(
         model=model,
         temperature=0,
@@ -123,6 +160,45 @@ def call_llm(document_text):
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Invoice text:\n\n{document_text[:12000]}"},
         ],
+    )
+    return response.choices[0].message.content
+
+
+def _image_to_data_url(path, longest_side=1600):
+    """Shrink the photo and turn it into a data URL the model can look at."""
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as img:
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        scale = longest_side / max(img.size)
+        if scale < 1:
+            img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def build_vision_messages(data_url):
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT.replace("invoice text", "an invoice photo")},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Extract the fields from this invoice image."},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ]
+
+
+def call_llm_vision(path):
+    """Let the model read the photo directly instead of relying on OCR text."""
+    client, model = _client_and_model()
+    response = client.chat.completions.create(
+        model=model,
+        temperature=0,
+        messages=build_vision_messages(_image_to_data_url(path)),
     )
     return response.choices[0].message.content
 
@@ -203,13 +279,36 @@ def validate(data, tolerance=0.02):
 
 # ------------------------------------------------------------------- main ---
 
+def _is_quota_error(exc):
+    text = str(exc)
+    return "429" in text or "RESOURCE_EXHAUSTED" in text
+
+
 def process(path):
-    """Full pipeline for one file."""
+    """Full pipeline for one file.
+
+    Photos and screenshots are sent to the model as images (set USE_VISION=0 to
+    turn this off). If that fails for a reason other than the daily quota, the
+    app falls back to OCR + text.
+    """
+    ext = Path(path).suffix.lower()
+    if ext in IMAGE_EXTENSIONS and os.getenv("USE_VISION", "1") != "0":
+        try:
+            data = clean_json(call_llm_vision(path))
+            return {
+                "fields": data,
+                "issues": validate(data),
+                "method": "vision",
+                "text_preview": "(the photo was read directly by the model, no OCR text)",
+            }
+        except Exception as exc:
+            if _is_quota_error(exc):
+                raise
+
     text, method = read_document(path)
     if not text.strip():
         raise ValueError("No text could be read from this file")
-    raw = call_llm(text)
-    data = clean_json(raw)
+    data = clean_json(call_llm(text))
     return {
         "fields": data,
         "issues": validate(data),
