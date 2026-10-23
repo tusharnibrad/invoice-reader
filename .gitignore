@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .venv/
 uploads/
+.eval_cache/
+results.txt
+samples/
